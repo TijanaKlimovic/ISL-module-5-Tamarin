@@ -1,0 +1,792 @@
+theory Mastercard begin
+
+// Function signature and definition of the equational theory E
+
+functions: MAC/3, MACprime/2, adec/2, aenc/2, f/2, fst/1, pair/2, pk/1,
+           sign/2, snd/1, true/0, verify/3
+equations:
+    adec(aenc(x.1, pk(x.2)), x.2) = x.1,
+    fst(<x.1, x.2>) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verify(sign(x.1, x.2), x.1, pk(x.2)) = true
+
+
+
+rule (modulo E) Terminal_Issuer_Channel:
+   [ Send( Sender, Recipient, channelID, msg ) ]
+  -->
+   [ Recv( Sender, Recipient, channelID, msg ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Generate_ATC:
+   [ Fr( ~ATC ) ] --> [ !ATC( ~ATC ), Out( ~ATC ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Create_Card:
+   [ Fr( ~PAN ), Fr( ~mk ), Fr( ~privkCard ) ]
+  -->
+   [
+   !SharedKey( ~PAN, ~mk ), !IssuedBy( ~PAN, $Issuer ),
+   !LtkCard( ~PAN, ~privkCard ), !Pk( ~PAN, pk(~privkCard) ),
+   Out( pk(~privkCard) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Compromise_Card:
+   [ !LtkCard( ~PAN, ~privkCard ) ]
+  --[ Compromise( ~PAN ) ]->
+   [ Out( <~PAN, ~privkCard> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Compromise_Shared_Key:
+   [ !IssuedBy( ~PAN, $Issuer ), !SharedKey( ~PAN, ~mk ) ]
+  --[ Compromise( $Issuer ), Compromise( ~PAN ) ]->
+   [ Out( ~mk ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Terminal_Sends_GPO:
+   [ Fr( ~un ) ]
+  -->
+   [
+   Out( <'GET_PROCESSING_OPTIONS', $amount, ~un> ),
+   Terminal_Sent_GPO( $Terminal, <$amount, ~un> )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Card_Responds_To_GPO:
+   [
+   In( <'GET_PROCESSING_OPTIONS', PDOL> ), !ATC( ATC ),
+   !LtkCard( ~PAN, ~privkCard )
+   ]
+  --[ Once( <~PAN, ATC, 'Card'> ) ]->
+   [ Out( 'DDA' ), Card_Responded_To_GPO( ~PAN, PDOL, ATC ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Terminal_Responds_To_DDA:
+   [ Terminal_Sent_GPO( $Terminal, PDOL ), In( 'DDA' ) ]
+  -->
+   [ Out( 'READ_RECORD' ), Terminal_Sent_RR( $Terminal, PDOL ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Card_Responds_To_RR:
+   [
+   Card_Responded_To_GPO( ~PAN, PDOL, ATC ), In( 'READ_RECORD' ),
+   !ATC( ATC ), !LtkCard( ~PAN, ~privkCard )
+   ]
+  -->
+   [ Out( ~PAN ), Card_Responded_To_RR( ~PAN, PDOL, ATC ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Terminal_Responds_To_PAN:
+   [ Terminal_Sent_RR( $Terminal, PDOL ), In( PAN ) ]
+  -->
+   [
+   Out( <'INTERNAL_AUTHENTICATE', snd(PDOL)> ),
+   Terminal_Sent_IA( $Terminal, PDOL, PAN )
+   ]
+
+  /*
+  rule (modulo AC) Terminal_Responds_To_PAN:
+     [ Terminal_Sent_RR( $Terminal, PDOL ), In( PAN ) ]
+    -->
+     [
+     Out( <'INTERNAL_AUTHENTICATE', z> ),
+     Terminal_Sent_IA( $Terminal, PDOL, PAN )
+     ]
+    variants (modulo AC)
+    1. PDOL  = PDOL.7
+       z     = snd(PDOL.7)
+    
+    2. PDOL  = <x.9, z.8>
+       z     = z.8
+  */
+
+rule (modulo E) Card_Responds_To_IA:
+   [
+   Card_Responded_To_RR( ~PAN, PDOL, ATC ),
+   In( <'INTERNAL_AUTHENTICATE', un> ), !ATC( ATC ),
+   !LtkCard( ~PAN, ~privkCard ), Fr( ~nc )
+   ]
+  -->
+   [
+   Out( <~nc, sign(<~nc, un>, ~privkCard)> ),
+   Card_Responded_To_IA( ~PAN, PDOL, ATC, un, ~nc )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Terminal_Responds_To_Signature:
+   [
+   Terminal_Sent_IA( $Terminal, PDOL, PAN ), !LtkCard( PAN, ~privkCard ),
+   !Pk( PAN, pkCard ), In( <nc, SDAD> )
+   ]
+  --[ Eq( verify(SDAD, <nc, snd(PDOL)>, pkCard), true ) ]->
+   [ Out( 'GENERATE_AC' ), Terminal_Sent_GenerateAC( $Terminal, PAN, PDOL )
+   ]
+
+  /*
+  rule (modulo AC) Terminal_Responds_To_Signature:
+     [
+     Terminal_Sent_IA( $Terminal, PDOL, PAN ), !LtkCard( PAN, ~privkCard ),
+     !Pk( PAN, pkCard ), In( <nc, SDAD> )
+     ]
+    --[ Eq( z, true ) ]->
+     [ Out( 'GENERATE_AC' ), Terminal_Sent_GenerateAC( $Terminal, PAN, PDOL )
+     ]
+    variants (modulo AC)
+    1. PDOL  = PDOL.11
+       SDAD  = SDAD.12
+       nc    = nc.13
+       pkCard
+             = pkCard.14
+       z     = verify(SDAD.12, <nc.13, snd(PDOL.11)>, pkCard.14)
+    
+    2. PDOL  = PDOL.13
+       SDAD  = sign(<nc.15, snd(PDOL.13)>, x.21)
+       nc    = nc.15
+       pkCard
+             = pk(x.21)
+       z     = true
+    
+    3. PDOL  = <x.18, x.19>
+       SDAD  = SDAD.13
+       nc    = nc.14
+       pkCard
+             = pkCard.15
+       z     = verify(SDAD.13, <nc.14, x.19>, pkCard.15)
+    
+    4. PDOL  = <x.18, x.19>
+       SDAD  = sign(<nc.14, x.19>, x.21)
+       nc    = nc.14
+       pkCard
+             = pk(x.21)
+       z     = true
+  */
+
+rule (modulo E) Card_Responds_To_GAC_OFFLINE:
+   [
+   Card_Responded_To_IA( ~PAN, PDOL, ATC, un, nc ), In( 'GENERATE_AC' ),
+   !ATC( ATC ), !LtkCard( ~PAN, ~privkCard ), !SharedKey( ~PAN, ~mk ),
+   !IssuedBy( ~PAN, $Issuer )
+   ]
+  --[
+  Running( ~PAN, 'Terminal',
+           <'Card', 'Terminal', ~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+  ),
+  Running( ~PAN, $Issuer,
+           <'Card', 'Issuer', ~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+  ),
+  Honest( $Issuer ), Honest( ~PAN )
+  ]->
+   [
+   Out( <'TC', ATC, MAC(f(~mk, ATC), PDOL, ATC)> ),
+   Card_Responded_To_GAC_OFFLINE( ~PAN, PDOL, ATC, un, nc )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Card_Responds_To_GAC_ONLINE:
+   [
+   Card_Responded_To_IA( ~PAN, PDOL, ATC, un, nc ), In( 'GENERATE_AC' ),
+   !ATC( ATC ), !LtkCard( ~PAN, ~privkCard ), !SharedKey( ~PAN, ~mk ),
+   !IssuedBy( ~PAN, $Issuer )
+   ]
+  --[
+  Running( ~PAN, 'Terminal',
+           <'Card', 'Terminal', ~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+  ),
+  Running( ~PAN, $Issuer,
+           <'Card', 'Issuer', ~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+  ),
+  Honest( $Issuer ), Honest( ~PAN )
+  ]->
+   [
+   Out( <'ARQC', ATC, MAC(f(~mk, ATC), PDOL, ATC)> ),
+   Card_Responded_To_GAC_ONLINE( ~PAN, PDOL, ATC, un, nc )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Terminal_Receives_TC:
+   [
+   Terminal_Sent_GenerateAC( $Terminal, ~PAN, PDOL ), In( <'TC', ATC, AC> ),
+   !IssuedBy( ~PAN, $Issuer )
+   ]
+  --[
+  Commit( 'Terminal', ~PAN, <'Card', 'Terminal', ~PAN, PDOL, ATC, AC> ),
+  Honest( $Issuer ), Honest( ~PAN )
+  ]->
+   [ ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Terminal_Receives_ARQC:
+   [
+   Terminal_Sent_GenerateAC( $Terminal, ~PAN, PDOL ),
+   In( <'ARQC', ATC, AC> ), !IssuedBy( ~PAN, $Issuer ), Fr( ~channelID )
+   ]
+  --[
+  Running( $Terminal, $Issuer, <'Terminal', 'Issuer', ~PAN, PDOL, ATC, AC>
+  ),
+  Honest( $Issuer ), Honest( ~PAN )
+  ]->
+   [
+   Send( $Terminal, $Issuer, <~channelID, '1'>, <~PAN, PDOL, ATC, AC> ),
+   Terminal_Sent_IssuerTransaction( $Terminal, ~PAN, PDOL, ~channelID,
+                                    <~PAN, PDOL, ATC, AC>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Terminal_Receives_IssuerAccept:
+   [
+   Terminal_Sent_IssuerTransaction( $Terminal, ~PAN, PDOL, channelID,
+                                    transaction
+   ),
+   !IssuedBy( ~PAN, $Issuer ),
+   Recv( $Issuer, $Terminal, <channelID, '2'>, <'ACCEPTED', ARPC> )
+   ]
+  --[
+  Online( ), Commit( 'Terminal', ~PAN, <'Card', 'Terminal', transaction> ),
+  Commit( $Terminal, $Issuer, <'Issuer', 'Terminal', transaction> ),
+  Honest( $Issuer ), Honest( ~PAN )
+  ]->
+   [ ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Issuer_Receives_AC:
+   [
+   Recv( $Terminal, $Issuer, <channelID, '1'>,
+         <~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+   ),
+   !SharedKey( ~PAN, ~mk ), !IssuedBy( ~PAN, $Issuer )
+   ]
+  --[
+  Once( <~PAN, ATC, 'Issuer'> ),
+  Running( $Issuer, $Terminal,
+           <'Issuer', 'Terminal', ~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+  )
+  ]->
+   [
+   Issuer_Commits( $Issuer, $Terminal,
+                   <~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>, channelID,
+                   MACprime(f(~mk, ATC), MAC(f(~mk, ATC), PDOL, ATC))
+   )
+   ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Issuer_Commits:
+   [
+   Issuer_Commits( $Issuer, $Terminal, <~PAN, PDOL, ATC, AC>, channelID,
+                   ARPC
+   )
+   ]
+  --[
+  Commit( $Issuer, ~PAN, <'Card', 'Issuer', ~PAN, PDOL, ATC, AC> ),
+  Commit( $Issuer, $Terminal, <'Terminal', 'Issuer', ~PAN, PDOL, ATC, AC>
+  ),
+  Honest( $Issuer ), Honest( ~PAN )
+  ]->
+   [ Send( $Issuer, $Terminal, <channelID, '2'>, <'ACCEPTED', ARPC> ) ]
+
+  /* has exactly the trivial AC variant */
+
+restriction equal:
+  "∀ a b #i. (Eq( a, b ) @ #i) ⇒ (a = b)"
+  // safety formula
+
+restriction once:
+  "∀ a #i #j. ((Once( a ) @ #i) ∧ (Once( a ) @ #j)) ⇒ (#i = #j)"
+  // safety formula
+
+lemma executable_offline:
+  exists-trace
+  "∃ PAN t #i #j.
+    ((((¬(Online( ) @ #j)) ∧ (#i < #j)) ∧
+      (Running( PAN, 'Terminal', <'Card', 'Terminal', t> ) @ #i)) ∧
+     (Commit( 'Terminal', PAN, <'Card', 'Terminal', t> ) @ #j)) ∧
+    (¬(∃ A #a. Compromise( A ) @ #a))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ PAN t #i #j.
+  (Running( PAN, 'Terminal', <'Card', 'Terminal', t> ) @ #i) ∧
+  (Commit( 'Terminal', PAN, <'Card', 'Terminal', t> ) @ #j)
+ ∧
+  (¬(Online( ) @ #j)) ∧ (#i < #j) ∧ (∀ A #a. (Compromise( A ) @ #a) ⇒ ⊥)"
+*/
+simplify
+solve( Running( PAN, 'Terminal', <'Card', 'Terminal', t> ) @ #i )
+  case Card_Responds_To_GAC_OFFLINE
+  solve( Card_Responded_To_IA( ~PAN, PDOL, ATC, un, nc ) ▶₀ #i )
+    case Card_Responds_To_IA
+    solve( !ATC( ~ATC ) ▶₂ #i )
+      case Generate_ATC
+      solve( !LtkCard( ~PAN, ~privkCard ) ▶₃ #i )
+        case Create_Card
+        solve( !SharedKey( ~PAN, ~mk ) ▶₄ #i )
+          case Create_Card
+          solve( !IssuedBy( ~PAN, $Issuer ) ▶₅ #i )
+            case Create_Card
+            solve( Commit( 'Terminal', ~PAN,
+                           <'Card', 'Terminal', ~PAN, PDOL, ~ATC, MAC(f(~mk, ~ATC), PDOL, ~ATC)>
+                   ) @ #j )
+              case Terminal_Receives_TC
+              solve( Terminal_Sent_GenerateAC( $Terminal, ~PAN, PDOL ) ▶₀ #j )
+                case Terminal_Responds_To_Signature
+                solve( !IssuedBy( ~PAN, $Issuer.1 ) ▶₂ #j )
+                  case Create_Card
+                  solve( !KU( sign(<nc.1, ~z>, ~privkCard) ) @ #vk.15 )
+                    case Card_Responds_To_IA
+                    solve( !KU( ~ATC ) @ #vk.14 )
+                      case Card_Responds_To_GAC_OFFLINE
+                      solve( !KU( ~PAN ) @ #vk.20 )
+                        case Card_Responds_To_RR
+                        solve( !KU( ~z ) @ #vk.24 )
+                          case Terminal_Responds_To_PAN
+                          solve( !KU( ~nc.1 ) @ #vk.22 )
+                            case Card_Responds_To_IA
+                            solve( !KU( MAC(f(~mk, ~ATC), <$amount, ~z>, ~ATC) ) @ #vk.22 )
+                              case Card_Responds_To_GAC_OFFLINE
+                              SOLVED // trace found
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma executable_online:
+  exists-trace
+  "∃ PAN Issuer t #i #j #k #l.
+    (((((((Online( ) @ #j) ∧ (#i < #j)) ∧
+         (Running( PAN, 'Terminal', <'Card', 'Terminal', t> ) @ #i)) ∧
+        (Commit( 'Terminal', PAN, <'Card', 'Terminal', t> ) @ #j)) ∧
+       (#k < #l)) ∧
+      (Running( PAN, Issuer, <'Card', 'Issuer', t> ) @ #k)) ∧
+     (Commit( Issuer, PAN, <'Card', 'Issuer', t> ) @ #l)) ∧
+    (¬(∃ A #a. Compromise( A ) @ #a))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ PAN Issuer t #i #j #k #l.
+  (Online( ) @ #j) ∧
+  (Running( PAN, 'Terminal', <'Card', 'Terminal', t> ) @ #i) ∧
+  (Commit( 'Terminal', PAN, <'Card', 'Terminal', t> ) @ #j) ∧
+  (Running( PAN, Issuer, <'Card', 'Issuer', t> ) @ #k) ∧
+  (Commit( Issuer, PAN, <'Card', 'Issuer', t> ) @ #l)
+ ∧
+  (#i < #j) ∧ (#k < #l) ∧ (∀ A #a. (Compromise( A ) @ #a) ⇒ ⊥)"
+*/
+simplify
+solve( Terminal_Sent_IssuerTransaction( $Terminal, ~PAN, PDOL, channelID,
+                                        transaction
+       ) ▶₀ #j )
+  case Terminal_Receives_ARQC
+  solve( !IssuedBy( ~PAN, $Issuer ) ▶₁ #j )
+    case Create_Card
+    solve( Recv( $Issuer, $Terminal, <~channelID, '2'>, <'ACCEPTED', ARPC>
+           ) ▶₂ #j )
+      case Terminal_Issuer_Channel
+      solve( Running( PAN.2, 'Terminal', <'Card', 'Terminal', t> ) @ #i )
+        case Card_Responds_To_GAC_OFFLINE
+        solve( Card_Responded_To_IA( ~PAN, PDOL, ATC, un, nc ) ▶₀ #i )
+          case Card_Responds_To_IA
+          solve( !ATC( ~ATC ) ▶₂ #i )
+            case Generate_ATC
+            solve( !LtkCard( ~PAN, ~privkCard ) ▶₃ #i )
+              case Create_Card
+              solve( !SharedKey( ~PAN, ~mk ) ▶₄ #i )
+                case Create_Card
+                solve( !IssuedBy( ~PAN, $Issuer ) ▶₅ #i )
+                  case Create_Card
+                  solve( Commit( 'Terminal', ~PAN,
+                                 <'Card', 'Terminal', ~PAN, PDOL, ~ATC, MAC(f(~mk, ~ATC), PDOL, ~ATC)>
+                         ) @ #j )
+                    case Terminal_Receives_IssuerAccept
+                    solve( Running( ~PAN, Issuer.1,
+                                    <'Card', 'Issuer', ~PAN, <$amount, ~z>, ~ATC, 
+                                     MAC(f(~mk, ~ATC), <$amount, ~z>, ~ATC)>
+                           ) @ #k )
+                      case Card_Responds_To_GAC_OFFLINE
+                      solve( Card_Responded_To_IA( ~PAN, <$amount, ~z>, ~ATC, un.1, nc.1
+                             ) ▶₀ #k )
+                        case Card_Responds_To_IA
+                        solve( Commit( $Issuer, ~PAN,
+                                       <'Card', 'Issuer', ~PAN, <$amount, ~z>, ~ATC, 
+                                        MAC(f(~mk, ~ATC), <$amount, ~z>, ~ATC)>
+                               ) @ #l )
+                          case Issuer_Commits
+                          solve( Issuer_Commits( $Issuer, $Terminal.1,
+                                                 <~PAN, <$amount, ~z>, ~ATC, 
+                                                  MAC(f(~mk, ~ATC), <$amount, ~z>, ~ATC)>,
+                                                 channelID.1, ARPC
+                                 ) ▶₀ #l )
+                            case Issuer_Receives_AC
+                            solve( !KU( sign(<nc.1, ~z>, ~privkCard) ) @ #vk.7 )
+                              case Card_Responds_To_IA
+                              solve( Recv( $Terminal, $Issuer, <~channelID, '1'>,
+                                           <~PAN.1, PDOL, ATC.1, MAC(f(~mk.1, ATC.1), PDOL, ATC.1)>
+                                     ) ▶₀ #vr.8 )
+                                case Terminal_Issuer_Channel
+                                solve( !KU( ~PAN ) @ #vk.8 )
+                                  case Card_Responds_To_RR
+                                  solve( !KU( ~ATC ) @ #vk.6 )
+                                    case Card_Responds_To_GAC_OFFLINE
+                                    solve( !KU( ~z ) @ #vk.24 )
+                                      case Terminal_Responds_To_PAN
+                                      solve( !KU( ~nc.1 ) @ #vk.9 )
+                                        case Card_Responds_To_IA
+                                        solve( !KU( MAC(f(~mk, ~ATC), <$amount, ~z>, ~ATC) ) @ #vk.11 )
+                                          case Card_Responds_To_GAC_OFFLINE
+                                          SOLVED // trace found
+                                        qed
+                                      qed
+                                    qed
+                                  qed
+                                qed
+                              qed
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma auth_to_terminal_offline:
+  all-traces
+  "∀ PAN transaction #i.
+    ((¬(Online( ) @ #i)) ∧
+     (Commit( 'Terminal', PAN, <'Card', 'Terminal', transaction> ) @ #i)) ⇒
+    ((∃ #j.
+       Running( PAN, 'Terminal', <'Card', 'Terminal', transaction> ) @ #j) ∨
+     (∃ C #r. (Compromise( C ) @ #r) ∧ (Honest( C ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ PAN transaction #i.
+  (Commit( 'Terminal', PAN, <'Card', 'Terminal', transaction> ) @ #i)
+ ∧
+  (¬(Online( ) @ #i)) ∧
+  (∀ #j.
+    (Running( PAN, 'Terminal', <'Card', 'Terminal', transaction> ) @ #j)
+   ⇒
+    ⊥) ∧
+  (∀ C #r. (Compromise( C ) @ #r) ∧ (Honest( C ) @ #i) ⇒ ⊥)"
+*/
+simplify
+solve( Commit( 'Terminal', PAN, <'Card', 'Terminal', transaction>
+       ) @ #i )
+  case Terminal_Receives_TC
+  solve( Terminal_Sent_GenerateAC( $Terminal, ~PAN, PDOL ) ▶₀ #i )
+    case Terminal_Responds_To_Signature
+    solve( !IssuedBy( ~PAN, $Issuer ) ▶₂ #i )
+      case Create_Card
+      solve( !KU( ~PAN ) @ #vk.8 )
+        case Card_Responds_To_RR
+        solve( !KU( sign(<nc, ~z>, ~privkCard) ) @ #vk.8 )
+          case Card_Responds_To_IA
+          solve( !KU( ~z ) @ #vk.17 )
+            case Terminal_Responds_To_PAN
+            solve( !KU( ~nc ) @ #vk.9 )
+              case Card_Responds_To_IA
+              SOLVED // trace found
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma auth_to_terminal_online:
+  all-traces
+  "∀ PAN Terminal Issuer transaction #i.
+    (((Online( ) @ #i) ∧
+      (Commit( 'Terminal', PAN, <'Card', 'Terminal', transaction> ) @ #i)) ∧
+     (Commit( Terminal, Issuer, <'Issuer', 'Terminal', transaction> ) @ #i)) ⇒
+    (((∃ #j.
+        Running( PAN, 'Terminal', <'Card', 'Terminal', transaction> ) @ #j) ∧
+      (∃ #j.
+        Running( Issuer, Terminal, <'Issuer', 'Terminal', transaction> ) @ #j)) ∨
+     (∃ C #r. (Compromise( C ) @ #r) ∧ (Honest( C ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ PAN Terminal Issuer transaction #i.
+  (Online( ) @ #i) ∧
+  (Commit( 'Terminal', PAN, <'Card', 'Terminal', transaction> ) @ #i) ∧
+  (Commit( Terminal, Issuer, <'Issuer', 'Terminal', transaction> ) @ #i)
+ ∧
+  (((∀ #j.
+      (Running( PAN, 'Terminal', <'Card', 'Terminal', transaction> ) @ #j)
+     ⇒
+      ⊥) ∨
+    (∀ #j.
+      (Running( Issuer, Terminal, <'Issuer', 'Terminal', transaction> ) @ #j)
+     ⇒
+      ⊥))) ∧
+  (∀ C #r. (Compromise( C ) @ #r) ∧ (Honest( C ) @ #i) ⇒ ⊥)"
+*/
+simplify
+solve( (∀ #j.
+         (Running( PAN.1, 'Terminal', <'Card', 'Terminal', transaction.1> ) @ #j)
+        ⇒
+         ⊥)  ∥
+       (∀ #j.
+         (Running( Issuer.1, Terminal.1, <'Issuer', 'Terminal', transaction.1>
+          ) @ #j)
+        ⇒
+         ⊥) )
+  case case_1
+  solve( Terminal_Sent_IssuerTransaction( $Terminal, ~PAN, PDOL, channelID,
+                                          transaction
+         ) ▶₀ #i )
+    case Terminal_Receives_ARQC
+    solve( !IssuedBy( ~PAN, $Issuer ) ▶₁ #i )
+      case Create_Card
+      solve( Recv( $Issuer, $Terminal, <~channelID, '2'>, <'ACCEPTED', ARPC>
+             ) ▶₂ #i )
+        case Terminal_Issuer_Channel
+        solve( Commit( 'Terminal', PAN.2, <'Card', 'Terminal', transaction>
+               ) @ #i )
+          case Terminal_Receives_IssuerAccept
+          solve( Commit( Terminal.1, Issuer.1,
+                         <'Issuer', 'Terminal', ~PAN, <$amount, ~z>, ATC, AC>
+                 ) @ #i )
+            case Terminal_Receives_IssuerAccept
+            solve( !KU( ~PAN ) @ #vk.8 )
+              case Card_Responds_To_RR
+              solve( !KU( sign(<nc, ~z>, ~privkCard) ) @ #vk.8 )
+                case Card_Responds_To_IA
+                solve( Recv( $Terminal, $Issuer, <~channelID, '1'>,
+                             <~PAN.1, PDOL, ATC.1, MAC(f(~mk, ATC.1), PDOL, ATC.1)>
+                       ) ▶₀ #vr.8 )
+                  case Terminal_Issuer_Channel
+                  solve( !KU( MAC(f(~mk, ATC), <$amount, ~z>, ATC) ) @ #vk.7 )
+                    case Card_Responds_To_GAC_OFFLINE
+                    by contradiction /* from formulas */
+                  next
+                    case Card_Responds_To_GAC_ONLINE
+                    by contradiction /* from formulas */
+                  next
+                    case c_MAC
+                    solve( !KU( f(~mk, ATC) ) @ #vk.20 )
+                      case c_f
+                      solve( !KU( ~mk ) @ #vk.22 )
+                        case Compromise_Shared_Key
+                        by contradiction /* from formulas */
+                      qed
+                    qed
+                  qed
+                qed
+              next
+                case c_sign
+                solve( !KU( ~privkCard ) @ #vk.15 )
+                  case Compromise_Card
+                  by contradiction /* from formulas */
+                qed
+              qed
+            next
+              case Compromise_Card
+              by contradiction /* from formulas */
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+next
+  case case_2
+  solve( Terminal_Sent_IssuerTransaction( $Terminal, ~PAN, PDOL, channelID,
+                                          transaction
+         ) ▶₀ #i )
+    case Terminal_Receives_ARQC
+    solve( !IssuedBy( ~PAN, $Issuer ) ▶₁ #i )
+      case Create_Card
+      solve( Recv( $Issuer, $Terminal, <~channelID, '2'>, <'ACCEPTED', ARPC>
+             ) ▶₂ #i )
+        case Terminal_Issuer_Channel
+        solve( Commit( 'Terminal', PAN.2, <'Card', 'Terminal', transaction>
+               ) @ #i )
+          case Terminal_Receives_IssuerAccept
+          solve( Commit( Terminal.1, Issuer.1,
+                         <'Issuer', 'Terminal', ~PAN, <$amount, ~z>, ATC, AC>
+                 ) @ #i )
+            case Terminal_Receives_IssuerAccept
+            solve( !KU( ~PAN ) @ #vk.8 )
+              case Card_Responds_To_RR
+              solve( !KU( sign(<nc, ~z>, ~privkCard) ) @ #vk.8 )
+                case Card_Responds_To_IA
+                solve( Recv( $Terminal, $Issuer, <~channelID, '1'>,
+                             <~PAN.1, PDOL, ATC.1, MAC(f(~mk, ATC.1), PDOL, ATC.1)>
+                       ) ▶₀ #vr.8 )
+                  case Terminal_Issuer_Channel
+                  by contradiction /* from formulas */
+                qed
+              next
+                case c_sign
+                solve( !KU( ~privkCard ) @ #vk.15 )
+                  case Compromise_Card
+                  by contradiction /* from formulas */
+                qed
+              qed
+            next
+              case Compromise_Card
+              by contradiction /* from formulas */
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma auth_to_issuer:
+  all-traces
+  "∀ PAN Terminal Issuer transaction #i.
+    ((Commit( Issuer, PAN, <'Card', 'Issuer', transaction> ) @ #i) ∧
+     (Commit( Issuer, Terminal, <'Terminal', 'Issuer', transaction> ) @ #i)) ⇒
+    (((∃ #j. Running( PAN, Issuer, <'Card', 'Issuer', transaction> ) @ #j) ∧
+      (∃ #j.
+        Running( Terminal, Issuer, <'Terminal', 'Issuer', transaction> ) @ #j)) ∨
+     (∃ C #r. (Compromise( C ) @ #r) ∧ (Honest( C ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ PAN Terminal Issuer transaction #i.
+  (Commit( Issuer, PAN, <'Card', 'Issuer', transaction> ) @ #i) ∧
+  (Commit( Issuer, Terminal, <'Terminal', 'Issuer', transaction> ) @ #i)
+ ∧
+  (((∀ #j.
+      (Running( PAN, Issuer, <'Card', 'Issuer', transaction> ) @ #j) ⇒ ⊥) ∨
+    (∀ #j.
+      (Running( Terminal, Issuer, <'Terminal', 'Issuer', transaction> ) @ #j)
+     ⇒
+      ⊥))) ∧
+  (∀ C #r. (Compromise( C ) @ #r) ∧ (Honest( C ) @ #i) ⇒ ⊥)"
+*/
+simplify
+solve( (∀ #j.
+         (Running( PAN, Issuer, <'Card', 'Issuer', transaction> ) @ #j) ⇒ ⊥)  ∥
+       (∀ #j.
+         (Running( Terminal, Issuer, <'Terminal', 'Issuer', transaction> ) @ #j)
+        ⇒
+         ⊥) )
+  case case_1
+  solve( Commit( Issuer, PAN, <'Card', 'Issuer', transaction> ) @ #i )
+    case Issuer_Commits
+    solve( Issuer_Commits( $Issuer, $Terminal, <~PAN, PDOL, ATC, AC>,
+                           channelID, ARPC
+           ) ▶₀ #i )
+      case Issuer_Receives_AC
+      solve( Commit( $Issuer, Terminal.1,
+                     <'Terminal', 'Issuer', ~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+             ) @ #i )
+        case Issuer_Commits
+        solve( Recv( $Terminal, $Issuer, <channelID, '1'>,
+                     <~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+               ) ▶₀ #vr )
+          case Terminal_Issuer_Channel
+          solve( !KU( ~PAN ) @ #vk.8 )
+            case Card_Responds_To_RR
+            solve( !KU( sign(<nc, ~z>, ~privkCard) ) @ #vk.8 )
+              case Card_Responds_To_IA
+              solve( !KU( MAC(f(~mk, ATC), <$amount, ~z>, ATC) ) @ #vk.6 )
+                case Card_Responds_To_GAC_OFFLINE
+                by contradiction /* from formulas */
+              next
+                case Card_Responds_To_GAC_ONLINE
+                by contradiction /* from formulas */
+              next
+                case c_MAC
+                solve( !KU( f(~mk, ATC) ) @ #vk.20 )
+                  case c_f
+                  solve( !KU( ~mk ) @ #vk.22 )
+                    case Compromise_Shared_Key
+                    by contradiction /* from formulas */
+                  qed
+                qed
+              qed
+            next
+              case c_sign
+              solve( !KU( ~privkCard ) @ #vk.15 )
+                case Compromise_Card
+                by contradiction /* from formulas */
+              qed
+            qed
+          next
+            case Compromise_Card
+            by contradiction /* from formulas */
+          qed
+        qed
+      qed
+    qed
+  qed
+next
+  case case_2
+  solve( Commit( Issuer, PAN, <'Card', 'Issuer', transaction> ) @ #i )
+    case Issuer_Commits
+    solve( Issuer_Commits( $Issuer, $Terminal, <~PAN, PDOL, ATC, AC>,
+                           channelID, ARPC
+           ) ▶₀ #i )
+      case Issuer_Receives_AC
+      solve( Commit( $Issuer, Terminal.1,
+                     <'Terminal', 'Issuer', ~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+             ) @ #i )
+        case Issuer_Commits
+        solve( Recv( $Terminal, $Issuer, <channelID, '1'>,
+                     <~PAN, PDOL, ATC, MAC(f(~mk, ATC), PDOL, ATC)>
+               ) ▶₀ #vr )
+          case Terminal_Issuer_Channel
+          by contradiction /* from formulas */
+        qed
+      qed
+    qed
+  qed
+qed
+
+/* All well-formedness checks were successful. */
+
+end
+
+==============================================================================
+summary of summaries:
+
+analyzed: Mastercard_19954171.spthy
+
+  output:          Mastercard_19954171.proof
+  processing time: 11.392952633s
+  executable_offline (exists-trace): verified (17 steps)
+  executable_online (exists-trace): verified (23 steps)
+  auth_to_terminal_offline (all-traces): falsified - found trace (9 steps)
+  auth_to_terminal_online (all-traces): verified (31 steps)
+  auth_to_issuer (all-traces): verified (22 steps)
+
+==============================================================================

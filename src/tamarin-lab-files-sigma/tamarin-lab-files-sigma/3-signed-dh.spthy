@@ -1,0 +1,172 @@
+theory SignedDiffieHellman
+begin
+
+/* Signed Diffie-Hellman protocol:
+   A -> B : A, g^x  (x fresh)
+   B -> A : B, g^y, sign(<A,g^y,g^x>,kB)  (y fresh)
+   A -> B : A, sign(<B,g^x,g^y>,kA)  */
+
+
+/* ----------------- */
+/* Equational theory */
+/* ----------------- */
+
+/* Load the built-in Diffie-Hellman and signature equational theories */
+builtins: diffie-hellman, signing
+
+
+/* ------------------ */
+/* Key infrastructure */
+/* ------------------ */
+
+rule genkey:
+   [ Fr(~kA) ] 
+   -->
+   [ !Key($A, ~kA),
+     !Pk($A, pk(~kA)),
+     Out(pk(~kA)) ]
+
+
+/* Initiator role */
+rule Init_1:
+  let gxI = 'g'^~xI in         //A's part of the key. naming conventions: ~n for n:fresh, 'g' for a public constant g
+   [ Fr(~xI) ]                 // generate a fresh value ~xI
+   -->
+   [ Init_1($A, ~xI, gxI),     // we use this fact to record the local state of the role
+     Out(<$A, gxI>) ]          // naming conventions: $A for A:pub
+
+
+rule Init_2:
+  let kI = Y^~xI 
+      m = <$A, Y, gxI>                 //signed message g^x, g^y
+      m2 = <b, gxI, Y>
+  in 
+
+   [ Init_1($A, ~xI, gxI),
+     !Key($A, ~kA),                 //get the private key associated to me
+     !Key(b, kB),             //typed because the only rule that derives Pk() facts is the genKey and we know the types used there
+     In(<b, Y, sign(m, kB)>) ]
+
+   --[ FinishedI($A),              // record that the initiator has executed her last rule
+       SecretI($A, b, kI),
+       Running('Resp','Init', b, $A, kI) ]->      // record that the initiator believes Y^~xI should be secret
+   
+   [ Out(<$A, sign(m2, ~kA)>),
+   Init_2($A, ~xI, gxI, Y, kI, m, sign(m,kB))] //pattern matching verification
+
+
+
+
+/* Responder role */
+rule Resp_1:
+  let gyR = 'g'^~yR 
+      m = <a, gyR, X> 
+  in
+
+    [Fr(~yR),
+    !Key($B, ~kB),      //find the private key associated to me 
+    In(<a, X>)          // I know it's a pair but nothing regarding the types within the pair or their form
+    ]
+
+    -->
+
+    [Out(<$B, gyR, sign(m, ~kB)>),
+    Resp_1($B, ~yR, gyR, X, m, sign(m, ~kB))]          //in the state i save who i am and the ephemeral key i created the pki information is bound to me so no need to save that 
+
+
+
+
+rule Resp_2:
+  let kR = X^~yR
+      m2 = <$B, X, gyR> 
+  in
+
+    [Resp_1($B, ~yR, gyR, X, m, sign(m, ~kB)), 
+    !Key($B, ~kB),
+    !Key(a, kA),  //I could extract the secret key for this a
+    In(<a, sign(m2, kA)>)          
+    ]
+
+    --[FinishedR($B),
+    SecretR($B, a, kR),
+    Commit('Resp','Init',$B, a, kR)]->
+
+    [Resp_2($B, ~yR, gyR, m, sign(m, ~kB), X, kR)]
+
+
+/* ---------- */
+/* Key Reveal */
+/* ---------- */
+
+rule Reveal_key:
+[ !Key(A, kA) ]
+--[ Compromised(A) ]->
+[ Out(kA) ]
+
+
+
+
+
+/* ---------- */
+/* Properties */
+/* ---------- */
+
+/* You can comment out the secrecy and agreement lemmas at first,
+   to first check your model satisfies the executability lemmas */
+
+/* Executability checks */
+lemma executableI:
+exists-trace "Ex #i A. FinishedI(A) @ i & not (Ex #j B. Compromised(B)@j)"
+
+lemma executableR:
+exists-trace "Ex #i B. FinishedR(B) @ i & not (Ex #j B. Compromised(B)@j)"
+
+
+/* Key secrecy */
+lemma key_secrecyI:
+"All #i A B k.
+ (SecretI(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+  ==> not (Ex #j. K(k) @ j)"
+
+lemma key_secrecyR:
+"All #i A B k.
+ (SecretR(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+  ==> not (Ex #j. K(k) @ j)"
+
+
+
+/* Forward secrecy of the key: (Question 9)
+   in all traces, if a key is marked as a secret between two agents
+   who were not compromised *before they key was marked*,
+   then the attacker cannot learn it */
+lemma key_forward_secrecyI:
+"All #i A B k.
+ (SecretI(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l & l < i) |
+       (Ex #m. Compromised(B) @ m & m < i)))
+  ==> not (Ex #j. K(k) @ j)"
+
+lemma key_forward_secrecyR:
+"All #i A B k.
+ (SecretR(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l & l < i) |
+       (Ex #m. Compromised(B) @ m & m < i)))
+  ==> not (Ex #j. K(k) @ j)"
+
+  
+/* Agreement of the responder with the initiator:  (Question 7)
+   in all traces, if the (honest) responder B believes to have established
+   a shared key K with an (honest) initiator A,
+   then A has indeed started running a session with B with the same key K */
+lemma agreement:
+"All #i A B k.
+  (Commit('Resp', 'Init', B, A, k) @ i &
+   not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+   ==> (Ex #j. Running('Resp', 'Init', B, A, k) @ j & j < i)"
+
+end
+
+
+

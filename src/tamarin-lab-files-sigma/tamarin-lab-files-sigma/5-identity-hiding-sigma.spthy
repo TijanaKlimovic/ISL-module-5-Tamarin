@@ -1,0 +1,176 @@
+theory IdentityHidingSigma
+begin
+
+/* Identity-hiding Sigma-I protocol
+   A -> B : g^x  (x fresh)
+   B -> A : g^y, senc(<B, sign(<g^x,g^y>,kB), mac(B,km)>,ke)  (y fresh, km=kdf_m(g^(xy)), ke=kdf_e(g^(xy)))
+   A -> B : senc(<A, sign(<g^y,g^x>,kA), mac(A,km)>,ke) */
+
+/* ----------------- */
+/* Equational theory */
+/* ----------------- */
+
+/* Load the built-in Diffie-Hellman, signature, and symmetric encryption equational theories */
+builtins: diffie-hellman, signing, symmetric-encryption
+
+/* Define functions modelling MACs and KDFs, with no associated equations */
+functions: mac/2, kdf_m/1, kdf_e/1
+
+
+
+/* ------------------ */
+/* Key infrastructure */
+/* ------------------ */
+
+rule genkey:
+   [ Fr(~kA) ] 
+   -->
+   [ !Key($A, ~kA), 
+     !Pk($A, pk(~kA)),
+     Out(pk(~kA)) ]
+
+/* Initiator role */
+rule Init_1:
+  let gxI = 'g'^~xI in         //A's part of the key. naming conventions: ~n for n:fresh, 'g' for a public constant g
+   [ Fr(~xI) ]                 // generate a fresh value ~xI
+   -->
+   [ Init_1($A, ~xI, gxI),     // we use this fact to record the local state of the role
+     Out(<gxI>) ]          
+
+
+rule Init_2:
+  let kI = Y^~xI 
+      m = <gxI, Y>                  //signed message g^x, g^y
+      m2 = <Y, gxI>
+      km = kdf_m(kI)                //compute mac key from g^xy
+      ke = kdf_e(kI)
+      mac = mac($A, km)             //compute my own mac 
+      plaintext = <b, sign(m, kB), mac(b, km)>
+      plaintext2 = <$A, sign(m2, ~kA), mac>
+  in 
+
+   [ Init_1($A, ~xI, gxI),
+     !Key($A, ~kA),                         //get the private key associated to me
+     !Key(b, kB),                   
+     In(< Y, senc(plaintext, ke)>) ] 		//pattern match that ish
+
+   --[ FinishedI($A),                             // record that the initiator has executed her last rule
+       SecretI($A, b, kI),                        // record that the initiator believes Y^~xI should be secret
+       Running('Resp','Init', b, $A, kI) ]->      
+   
+   [ Out(senc(plaintext2, ke)),
+   Init_2($A, ~xI, gxI, Y, kI, m, ke, sign(m,kB))]    //pattern matching verification
+
+
+
+
+/* Responder role */
+rule Resp_1:
+  let gyR = 'g'^~yR 
+      m = <X, gyR> 
+      km = kdf_m(X^~yR) //compute the mac key from g^xy
+      ke = kdf_e(X^~yR)
+      mac = mac($B, km) //compute the mac of B
+      plaintext = <$B, sign(m, ~kB), mac>
+  in
+
+    [Fr(~yR),
+    !Key($B, ~kB),      //find the private key associated to me 
+    In(<X>)          
+    ]
+
+    -->
+
+    [Out(< gyR, senc(plaintext, ke)>),
+    Resp_1($B, ~yR, gyR, X, m, km, ke, sign(m, ~kB), mac)]           
+
+
+
+rule Resp_2:
+  let kR = X^~yR
+      m2 = <gyR, X>
+      plaintext = <a, sign(m2, kA), mac(a, km)>
+  in
+
+    [Resp_1($B, ~yR, gyR, X, m, km, ke, sign(m, ~kB), mac), 
+    !Key($B, ~kB),
+    !Key(a, kA), 
+    In(senc(plaintext, ke))          
+    ]
+
+    --[FinishedR($B),
+    SecretR($B, a, kR),
+    Commit('Resp','Init',$B, a, kR)]->
+
+    [Resp_2($B, ~yR, gyR, m, km, mac, ke, sign(m, ~kB), X, kR)]
+
+/* ---------- */
+/* Key Reveal */
+/* ---------- */
+
+rule Reveal_key:
+[ !Key(A, kA) ]
+--[ Compromised(A) ]->
+[ Out(kA) ]
+
+
+
+
+/* ---------- */
+/* Properties */
+/* ---------- */
+
+/* Executability checks */
+lemma executableI:
+exists-trace "Ex #i A. FinishedI(A) @ i & not (Ex #j B. Compromised(B)@j)"
+
+lemma executableR:
+exists-trace "Ex #i B. FinishedR(B) @ i & not (Ex #j B. Compromised(B)@j)"
+
+
+
+/* Key secrecy */
+lemma key_secrecyI:
+"All #i A B k.
+ (SecretI(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+  ==> not (Ex #j. K(k) @ j)"
+
+lemma key_secrecyR:
+"All #i A B k.
+ (SecretR(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+  ==> not (Ex #j. K(k) @ j)"
+
+
+/* Forward secrecy of the key: (Question 9)
+   in all traces, if a key is marked as a secret between two agents
+   who were not compromised *before they key was marked*,
+   then the attacker cannot learn it */
+lemma key_forward_secrecyI:
+"All #i A B k.
+ (SecretI(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l & l < i) |
+       (Ex #m. Compromised(B) @ m & m < i)))
+  ==> not (Ex #j. K(k) @ j)"
+
+lemma key_forward_secrecyR:
+"All #i A B k.
+ (SecretR(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l & l < i) |
+       (Ex #m. Compromised(B) @ m & m < i)))
+  ==> not (Ex #j. K(k) @ j)"
+
+
+/* Agreement of the responder with the initiator */
+lemma agreement:
+"All #i A B k.
+  (Commit('Resp', 'Init', B, A, k) @ i &
+   not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+   ==> (Ex #j. Running('Resp', 'Init', B, A, k) @ j & j < i)"
+
+end
+
+/* Question 10 here */
+
+
